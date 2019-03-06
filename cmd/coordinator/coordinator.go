@@ -1401,9 +1401,17 @@ func skipBuild(br buildgo.BuilderRev) bool {
 		// conditionally.
 		bc, ok := dashboard.Builders[br.Name]
 		return !ok || bc.IsReverse()
-	case "exp", // always broken, depends on mobile which is broken
-		"mobile", // always broken (gl, etc). doesn't compile.
-		"term":   // no code yet in repo,
+	case "mobile":
+		if strings.HasPrefix(br.Name, "android-") {
+			return false
+		}
+		return true
+	case "exp":
+		if strings.HasPrefix(br.Name, "android-") || br.Name == "linux-amd64" {
+			return false
+		}
+		return true
+	case "term": // no code yet in repo
 		return true
 	case "perf":
 		if br.Name == "linux-amd64-nocgo" {
@@ -1594,6 +1602,10 @@ func (st *buildStatus) expectedBuildletStartDuration() time.Duration {
 	pool := st.buildletPool()
 	switch pool.(type) {
 	case *gceBuildletPool:
+		if strings.HasPrefix(st.Name, "android-") {
+			// about a minute for buildlet + minute for Android emulator to be usable
+			return 2 * time.Minute
+		}
 		return time.Minute
 	case *reverseBuildletPool:
 		goos, arch := st.conf.GOOS(), st.conf.GOARCH()
@@ -2478,6 +2490,7 @@ func (st *buildStatus) runSubrepoTests() (remoteErr, err error) {
 	}
 
 	return st.bc.Exec(path.Join("go", "bin", "go"), buildlet.ExecOpts{
+		Debug:  true, // make buildlet print extra debug in output for failures
 		Output: st,
 		Dir:    dir,
 		ExtraEnv: append(st.conf.Env(),
@@ -2836,11 +2849,6 @@ func parseOutputAndBanner(b []byte) (banner string, out []byte) {
 // (A communication error)
 const maxTestExecErrors = 3
 
-func execTimeout(testNames []string) time.Duration {
-	// TODO(bradfitz): something smarter probably.
-	return 20 * time.Minute
-}
-
 // runTestsOnBuildlet runs tis on bc, using the optional goroot & gopath environment variables.
 func (st *buildStatus) runTestsOnBuildlet(bc *buildlet.Client, tis []*testItem, goroot, gopath string) {
 	names := make([]string, len(tis))
@@ -2871,7 +2879,7 @@ func (st *buildStatus) runTestsOnBuildlet(bc *buildlet.Client, tis []*testItem, 
 	args = append(args, names...)
 	var buf bytes.Buffer
 	t0 := time.Now()
-	timeout := execTimeout(names)
+	timeout := st.conf.DistTestsExecTimeout(names)
 	var remoteErr, err error
 	if ti := tis[0]; ti.bench != nil {
 		pbr, perr := st.parentRev()
